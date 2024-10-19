@@ -1,0 +1,5 @@
+flask
+pillow
+flask
+insightface 
+opencv-python
