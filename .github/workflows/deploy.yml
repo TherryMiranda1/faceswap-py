@@ -55,7 +55,7 @@ jobs:
         run: unzip release.zip
 
       - name: Set up SSH
-        uses: webfactory/ssh-agent@v0.5.5
+        uses: webfactory/ssh-agent@v0.7.x
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
