@@ -3,13 +3,14 @@ import io
 import os
 import logging
 import insightface
+import requests
 from insightface.app import FaceAnalysis
-from insightface.data import get_image as ins_get_image
 from flask import Flask, request, jsonify, send_file, render_template
 
 UPLOAD_FOLDER = 'uploads'
+MAX_WIDTH = 640
 
-app_flask = Flask(__name__)
+app = Flask(__name__)
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
@@ -63,47 +64,84 @@ def save_uploaded_file(uploaded_file, upload_dir=UPLOAD_FOLDER):
         logger.error(f"Error al guardar el archivo: {e}")
         raise e
 
+def download_image_from_url(url):
+    try:
+        response = requests.get(url)
+        if response.status_code == 200:
+            return io.BytesIO(response.content)
+        else:
+            raise Exception(f"Error al descargar la imagen. Status Code: {response.status_code}")
+    except Exception as e:
+        raise Exception(f"Error al descargar la imagen desde la URL: {e}")
 
-@app_flask.route('/', methods=['GET'])
+def save_image_from_bytes(image_bytes, filename):
+    image_path = os.path.join(UPLOAD_FOLDER, filename)
+    with open(image_path, 'wb') as f:
+        f.write(image_bytes.getbuffer())
+    return image_path
+
+@app.route('/', methods=['GET'])
 def visit():
     logger.info("App visitada")
     return render_template('welcome.html')
 
-@app_flask.route('/health', methods=['GET'])
-def health_check():
-    logger.info("Endpoint de salud consultado.")
-    return jsonify({"message": "La API está funcionando correctamente."})
-
-
-@app_flask.route('/swap_faces/', methods=['POST'])
+@app.route('/swap-faces/', methods=['POST'])
 def swap_faces():
     try:
-        
-        # Obtener imágenes de la solicitud
+        # Obtener archivos o URLs de la solicitud
         target_file = request.files.get('target')
         source_file = request.files.get('source_face')
         
-        if not source_file or not target_file:
-            return jsonify({"error": "Both source and target images are required"}), 400
-        
-        # Validar tipos de archivo
-        if not (allowed_file(source_file.filename) and allowed_file(target_file.filename)):
-            return jsonify({"error": "Invalid file type. Only .png, .jpg, .jpeg are allowed"}), 400
-        
+        target_url = request.form.get('target_url')
+        source_url = request.form.get('source_face_url')
 
-        source_image = save_uploaded_file(source_file)
-        target_image = save_uploaded_file(target_file)
-        logger.info(f"Archivos cargados: /uploads/{source_image} y /uploads/{target_image}")
-       
+        # Validar que se ha proporcionado al menos un método (archivo o URL)
+        if not (target_file or target_url) or not (source_file or source_url):
+            return jsonify({"error": "Both source and target images are required (file or URL)"}), 400
+        
+        # Proceso para obtener la imagen de origen (source)
+        if source_file:
+            if not allowed_file(source_file.filename):
+                return jsonify({"error": "Invalid file type for source image. Only .png, .jpg, .jpeg are allowed"}), 400
+            source_image = save_uploaded_file(source_file)
+        elif source_url:
+            try:
+                source_image_bytes = download_image_from_url(source_url)
+                source_image = save_image_from_bytes(source_image_bytes, "source_image.jpg")
+            except Exception as e:
+                return jsonify({"error": f"Failed to download source image: {str(e)}"}), 400
+        else:
+            return jsonify({"error": "Source image is required"}), 400
+
+        # Proceso para obtener la imagen objetivo (target)
+        if target_file:
+            if not allowed_file(target_file.filename):
+                return jsonify({"error": "Invalid file type for target image. Only .png, .jpg, .jpeg are allowed"}), 400
+            target_image = save_uploaded_file(target_file)
+        elif target_url:
+            try:
+                target_image_bytes = download_image_from_url(target_url)
+                target_image = save_image_from_bytes(target_image_bytes, "target_image.jpg")
+            except Exception as e:
+                return jsonify({"error": f"Failed to download target image: {str(e)}"}), 400
+        else:
+            return jsonify({"error": "Target image is required"}), 400
+
+        logger.info(f"Archivos procesados: source -> {source_image}, target -> {target_image}")
+
+        # Leer las imágenes usando OpenCV
         source_ins_image = cv2.imread(source_image)
         target_ins_image = cv2.imread(target_image)
+
+        if source_ins_image is None or target_ins_image is None:
+            return jsonify({"error": "One of the images is invalid or corrupted"}), 400
 
         max_width = 640
         target_width = min(max_width, source_ins_image.shape[1])
         
-        # Unificar las dimensiones de las imagenes
+        # Unificar las dimensiones de las imágenes
         aspect_ratio = target_ins_image.shape[1] / target_ins_image.shape[0]
-        target_ins_image_resized = cv2.resize(target_ins_image, (target_width, int(max_width/ aspect_ratio)))
+        target_ins_image_resized = cv2.resize(target_ins_image, (target_width, int(target_width / aspect_ratio)))
         
         # Obtener las caras de ambas imágenes
         source_faces = face_app.get(source_ins_image) 
@@ -113,11 +151,11 @@ def swap_faces():
             return jsonify({"error": "No face detected in source image"}), 400
         if len(target_faces) == 0:
             return jsonify({"error": "No face detected in target image"}), 400
-        
+
         logger.info(f"Caras obtenidas: {len(source_faces)} y {len(target_faces)}")
-            
+        
         source_face = source_faces[0]
-        target_face = target_faces[0] 
+        target_face = target_faces[0]
         
         # Realizar el intercambio de caras
         try:
@@ -138,6 +176,6 @@ def swap_faces():
     except Exception as e:
         logger.error(f"Error desconocido: {e}")
         return jsonify({"error": "Internal server error"}), 500
-
+    
 if __name__ == '__main__':
-    app_flask.run(host='0.0.0.0')
+    app.run(host='0.0.0.0')
