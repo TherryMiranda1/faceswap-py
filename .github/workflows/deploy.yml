@@ -1,5 +1,4 @@
-
-name: Deploy Python app to VM - ghougly-swap
+name: Build and deploy Python app to Azure Web App - ghougly-swap
 
 on:
   push:
@@ -19,14 +18,22 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Create and start virtual environment
+      - name: Cache pip packages
+        uses: actions/cache@v3
+        id: pip-cache
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
         run: |
           python -m venv venv
           source venv/bin/activate
-      
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-        
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
       # Optional: Add step to run tests here (PyTest, Django test suites, etc.)
 
       - name: Zip artifact for deployment
@@ -45,6 +52,10 @@ jobs:
     needs: build
     environment:
       name: 'Production'
+      url: ${{ steps.deploy-to-webapp.outputs.webapp-url }}
+    permissions:
+      id-token: write #This is required for requesting the JWT
+
     steps:
       - name: Download artifact from build job
         uses: actions/download-artifact@v4
@@ -54,15 +65,12 @@ jobs:
       - name: Unzip artifact for deployment
         run: unzip release.zip
 
-      - name: Set up SSH
-        uses: webfactory/ssh-agent@v0.7.x
+      - name: Start SSH Agent
+        uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      - name: Copy files to VM using SCP
+      - name: Deploy to Remote Server
         run: |
-          scp -o StrictHostKeyChecking=no -r ./* therry@${{ secrets.VM_IP}}:/home/therry/repos/faceswap-py
-
-      - name: Restart Gunicorn Service on VM
-        run: |
-          ssh -o StrictHostKeyChecking=no therry@${{ secrets.VM_IP }} "sudo systemctl restart gunicorn"
+          scp -o StrictHostKeyChecking=no -r * therry@${{ secrets.VM_IP }}:/home/therry/repos/faceswap-py
+          ssh -o StrictHostKeyChecking=no therry@${{ secrets.VM_IP }} 'sudo systemctl restart gunicorn'
